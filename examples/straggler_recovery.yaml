@@ -1,0 +1,77 @@
+# Recover two input arrays from any two of three Vandermonde-coded workers.
+calculation_type: float64
+straggler_ids: [0]
+
+init:
+  _target_: builtins.dict
+  _convert_: all
+  code_family:
+    _target_: examples.components.VandermondeCode
+  parameters:
+    _target_: codedcompute.codes.code_parameters.CodeParameters
+    m: 2
+    n: 3
+  information_set:
+    _target_: numpy.array
+    object: [[1.0, 2.0], [3.0, 4.0]]
+  encoder:
+    _target_: codedcompute.encoding.encoder.Encoder
+  dispatcher:
+    _target_: codedcompute.worker_nodes.worker_dispatcher.WorkerDispatcher
+  decoder:
+    _target_: codedcompute.decoding.decoders.pseudo_inverse.PseudoInverseDecoder
+  worker_operation:
+    _target_: codedcompute.worker_nodes.operation_wrappers.with_deterministic_straggler
+    operation:
+      _target_: hydra.utils.get_method
+      path: examples.components.sum_information
+  worker_configurations: []
+  worker_kwargs_by_id: {}
+
+pipeline:
+  - call: code_family.generate_code
+    args: ["@parameters"]
+
+  - encoded_information:
+      call: encoder.encode
+      args: ["@information_set", "@code_family"]
+
+  - worker_ids:
+      call: builtins.range
+      args: ["@parameters.n"]
+
+  - for_each:
+      values: "@worker_ids"
+      as: worker_id
+      steps:
+        - worker_configuration:
+            call: codedcompute.worker_nodes.worker_node.WorkerNodeConfig
+            kwargs:
+              operation: "@worker_operation"
+              calculation_type: "@config.calculation_type"
+        - call: worker_configurations.append
+          args: ["@worker_configuration"]
+        - straggle:
+            call: operator.contains
+            args: ["@config.straggler_ids", "@worker_id"]
+        - worker_kwargs:
+            call: builtins.dict
+            kwargs:
+              straggle: "@straggle"
+        - call: worker_kwargs_by_id.__setitem__
+          args: ["@worker_id", "@worker_kwargs"]
+
+  - call: dispatcher.setup
+    args: ["@parameters.n", "@worker_configurations"]
+
+  - worker_results:
+      call: dispatcher.dispatch
+      args: ["@encoded_information", "@worker_kwargs_by_id"]
+
+  - recovered:
+      call: decoder.decode
+      args: ["@worker_results", "@code_family"]
+
+  # Fail the experiment if decoding does not recover the original arrays.
+  - call: numpy.testing.assert_allclose
+    args: ["@recovered", "@information_set"]

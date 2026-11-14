@@ -1,0 +1,22 @@
+# @package _global_
+init:
+  _target_: builtins.dict
+  _convert_: all
+  code_family:
+    _target_: tests.pipeline_tests.support.FixedMatrixCode
+  code_parameters:
+    _target_: codedcompute.codes.code_parameters.CodeParameters
+    m: 2
+    n: 4
+  encoder:
+    _target_: codedcompute.encoding.encoder.Encoder
+  dispatcher:
+    _target_: codedcompute.worker_nodes.worker_dispatcher.WorkerDispatcher
+  decoder:
+    _target_: codedcompute.decoding.decoders.pseudo_inverse.PseudoInverseDecoder
+  worker_operation:
+    _target_: codedcompute.worker_nodes.operation_wrappers.with_deterministic_straggler
+    operation:
+      _target_: hydra.utils.get_method
+      path: tests.pipeline_tests.support.scaled_sum
+  trial_results: []

@@ -1,0 +1,10 @@
+# @package _global_
+calculation_type: complex128
+
+init:
+  information_set:
+    _target_: numpy.asarray
+    dtype: complex128
+    a:
+      - [["1+2j", "3-1j"], ["2+4j", "-1-2j"]]
+      - [["-2+0.5j", "4+3j"], ["1-3j", "2+1j"]]

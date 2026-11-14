@@ -1,0 +1,32 @@
+defaults:
+  - components
+  - data: real
+  - trial
+  - _self_
+
+scale: 1.0
+survivor_sets: [[0, 1, 2, 3]]
+
+pipeline:
+  - call: code_family.generate_code
+    kwargs:
+      parameters: "@code_parameters"
+
+  - encoded_information:
+      call: encoder.encode
+      kwargs:
+        information_set: "@information_set"
+        code_family: "@code_family"
+
+  - worker_count:
+      call: code_family.number_of_workers_required
+
+  - worker_ids:
+      call: builtins.range
+      args: ["@worker_count"]
+
+  - for_each:
+      values: "@config.survivor_sets"
+      as: surviving_worker_ids
+      steps:
+        - run: "@config.trial_pipeline"

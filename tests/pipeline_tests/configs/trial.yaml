@@ -1,0 +1,66 @@
+# @package _global_
+trial_pipeline:
+  - call: dispatcher.reset
+
+  - worker_configurations:
+      call: builtins.list
+
+  - worker_kwargs_by_id:
+      call: builtins.dict
+
+  - for_each:
+      values: "@worker_ids"
+      as: worker_id
+      steps:
+        - worker_configuration:
+            call: codedcompute.worker_nodes.worker_node.WorkerNodeConfig
+            kwargs:
+              operation: "@worker_operation"
+              calculation_type: "@config.calculation_type"
+        - call: worker_configurations.append
+          args: ["@worker_configuration"]
+        - responds:
+            call: operator.contains
+            args: ["@surviving_worker_ids", "@worker_id"]
+        - straggle:
+            call: operator.not_
+            args: ["@responds"]
+        - worker_kwargs:
+            call: builtins.dict
+            kwargs:
+              straggle: "@straggle"
+              scale: "@config.scale"
+        - call: worker_kwargs_by_id.__setitem__
+          args: ["@worker_id", "@worker_kwargs"]
+
+  - call: dispatcher.setup
+    kwargs:
+      number_of_workers_required: "@worker_count"
+      parameters_per_worker: "@worker_configurations"
+
+  - worker_results:
+      call: dispatcher.dispatch
+      kwargs:
+        encoded_information_per_worker: "@encoded_information"
+        worker_kwargs_by_id: "@worker_kwargs_by_id"
+
+  - decoded_information:
+      call: decoder.decode
+      kwargs:
+        worker_results: "@worker_results"
+        code_family: "@code_family"
+
+  - survivor_ids:
+      call: builtins.list
+      args: ["@surviving_worker_ids"]
+
+  - trial_record:
+      call: builtins.dict
+      kwargs:
+        survivor_ids: "@survivor_ids"
+        worker_results: "@worker_results"
+        decoded_information: "@decoded_information"
+        workers: "@dispatcher.workers"
+
+  - call: trial_results.append
+    args: ["@trial_record"]
