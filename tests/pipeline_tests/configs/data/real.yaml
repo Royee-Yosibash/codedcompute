@@ -1,0 +1,10 @@
+# @package _global_
+calculation_type: float64
+
+init:
+  information_set:
+    _target_: numpy.asarray
+    dtype: float64
+    a:
+      - [[1.0, 2.0], [3.0, 4.0]]
+      - [[-2.0, 4.0], [3.0, -1.0]]
