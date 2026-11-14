@@ -3,7 +3,7 @@
 A Python toolkit for simulating distributed coded computation, modeling worker
 stragglers, and running configurable experiments with NumPy and Hydra.
 
-The PyPI distribution and Python import name are both `codedcompute`.
+The package and Python import name are both `codedcompute`.
 
 ## Introduction
 
@@ -12,6 +12,17 @@ be recovered even when some workers do not respond. Coded Compute provides
 components for generating code matrices, assigning encoded inputs to workers,
 executing worker operations, and decoding the surviving results.
 
+The computation has four stages:
+
+1. **Choose a code.** A code matrix has one column per input item and one row per
+   worker. Each row specifies the coefficients assigned to that worker.
+2. **Encoding.** Associate each input with its coefficient for each
+   worker. The dispatcher applies those coefficients before worker execution.
+3. **Dispatch & Run.** Each worker applies a user-defined operation to its
+   weighted inputs.
+4. **Decoding.** Use the responding workers' code rows to reconstruct
+   the outputs that would have been obtained from the original, uncoded inputs.
+
 Workers run locally and sequentially. Stragglers are modeled as missing responses,
 rather than as elapsed-time delays or network failures.
 
@@ -19,7 +30,7 @@ rather than as elapsed-time delays or network failures.
 
 - Prototype code families and check recovery under selected worker failures.
 - Study numerical recovery with different code matrices and worker precisions.
-- Run repeated experiments with seeded random straggler models.
+- Run repeated random seeded experiments.
 - Describe experiment initialization and execution steps with Hydra and OmegaConf.
 
 ## Features
@@ -32,95 +43,37 @@ rather than as elapsed-time delays or network failures.
   calculation dtype, with optional per-worker operation arguments.
 - **Straggler models.** Wrap operations with deterministic failure flags or
   probabilistic missing responses, with support for seeded NumPy generators.
-- **Pseudoinverse decoding.** Recover outputs using the code rows associated with
-  responding workers. Reject surviving code matrices without sufficient rank.
+- **Decoding.** Recover outputs using the outputs associated with
+  responding workers.
 - **Experiment pipelines.** Instantiate objects through Hydra and execute ordered
   calls, nested pipelines, and loops against a shared workspace.
 
 ## Example: recover results with a missing worker
 
-This example defines a Vandermonde code with three workers and two information
-items. Each worker sums its coefficient-weighted inputs. Worker 0 is marked as a
-straggler, and the other two responses recover the original arrays.
+Suppose the inputs are two arrays, `A = [1, 2]` and `B = [3, 4]`. Instead of
+assigning each array to just one worker, use three workers with these code rows:
 
-```python
-import numpy as np
+| Worker | Code row | Worker computes | Result |
+| --- | --- | --- | --- |
+| 0 | `[1, 1]` | `A + B` | `[4, 6]` |
+| 1 | `[1, 2]` | `A + 2B` | `[7, 10]` |
+| 2 | `[1, 3]` | `A + 3B` | `[10, 14]` |
 
-from codedcompute.codes.code_family import CodeFamily
-from codedcompute.codes.code_parameters import CodeParameters
-from codedcompute.decoding.decoders.pseudo_inverse import (
-    PseudoInverseDecoder,
-)
-from codedcompute.encoding.encoder import Encoder
-from codedcompute.worker_nodes.operation_wrappers import (
-    with_deterministic_straggler,
-)
-from codedcompute.worker_nodes.worker_dispatcher import (
-    WorkerDispatcher,
-)
-from codedcompute.worker_nodes.worker_node import WorkerNodeConfig
+If worker 0 does not respond, the other two answers still contain enough
+information to recover both arrays. Subtracting worker 1's answer from worker 2's
+gives `B`. Subtracting `2B` from worker 1's answer then gives `A`.
 
+The library performs this reconstruction with `PseudoInverseDecoder` rather
+than hand-written equations. The example's code matrix and summing operation are
+implemented as `VandermondeCode` and `sum_information` in
+[examples/components.py](examples/components.py).
 
-class VandermondeCode(CodeFamily):
-    """Generate a real Vandermonde matrix for this example."""
-
-    def _generate_new_code(self, parameters: CodeParameters) -> np.ndarray:
-        return np.vander(
-            np.arange(1, parameters.n + 1, dtype=float),
-            N=parameters.m,
-            increasing=True,
-        )
-
-
-def sum_information(*, information, calculation_type):
-    """Sum a worker's coefficient-weighted arrays.
-
-    Args:
-        information: Weighted arrays assigned to one code row.
-        calculation_type: NumPy dtype configured for the worker.
-
-    Returns:
-        The elementwise sum of the weighted arrays.
-    """
-    return np.sum(information, axis=0, dtype=calculation_type)
-
-
-parameters = CodeParameters(m=2, n=3)
-code = VandermondeCode()
-code.generate_code(parameters)
-
-inputs = [np.array([1.0, 2.0]), np.array([3.0, 4.0])]
-encoded = Encoder.encode(inputs, code)
-
-operation = with_deterministic_straggler(sum_information)
-dispatcher = WorkerDispatcher()
-dispatcher.setup(
-    parameters.n,
-    [WorkerNodeConfig(operation, np.float64) for _ in range(parameters.n)],
-)
-responses = dispatcher.dispatch(
-    encoded,
-    worker_kwargs_by_id={0: {"straggle": True}},
-)
-recovered = PseudoInverseDecoder().decode(responses, code)
-
-assert [response.worker_id for response in responses] == [1, 2]
-np.testing.assert_allclose(recovered, inputs)
-print(np.round(np.stack(recovered), decimals=6))
-```
-
-Expected output:
-
-```text
-[[1. 2.]
- [3. 4.]]
-```
-
-The two surviving code rows have full column rank. Recovery depends on that rank
-and on numerical conditioning. Worker operations must preserve the linear
-relationships represented by the code for pseudoinverse decoding to recover
-their uncoded outputs. Arbitrary nonlinear operations do not generally satisfy
-this requirement.
+This example recovers the input arrays because the worker operation sums the
+weighted inputs. More generally, decoding recovers the uncoded operation's
+outputs only when that operation preserves the code's linear relationships.
+Arbitrary nonlinear operations do not generally meet this requirement. Recovery
+also requires enough independent surviving code rows and depends on numerical
+conditioning.
 
 ## Versioning
 
@@ -147,16 +100,28 @@ python -m pip install codedcompute
 
 ### Core API
 
-1. Create `CodeParameters(m=..., n=...)`, where `m` is the number of information
-   items and `n` is the number of workers, with `0 < m <= n`.
-2. Subclass `CodeFamily`, implement `_generate_new_code`, and call
-   `generate_code(parameters)`. The matrix must have shape `(n, m)`.
-3. Call `Encoder.encode(information_set, code_family)` to create worker inputs.
-4. Configure `WorkerDispatcher` with one `WorkerNodeConfig` per worker. Operations
-   receive keyword arguments `information` and `calculation_type`. Returning
-   `None` indicates a missing response.
-5. Dispatch the inputs, then pass the responses and code family to
-   `PseudoInverseDecoder.decode`.
+The classes follow the same encode, execute, and decode sequence:
+
+1. Create `CodeParameters(m=..., n=...)`, where `m` is the number of input items
+   and `n` is the number of workers, with `0 < m <= n`. In the example above,
+   `m=2` and `n=3`.
+2. Subclass `CodeFamily` and implement `_generate_new_code` to return a matrix of
+   shape `(n, m)`. Call `generate_code(parameters)` to store that matrix in the
+   code-family instance. `VandermondeCode` is an example implementation.
+3. Call `Encoder.encode(information_set, code_family)`. It returns one record per
+   worker containing the input items and their coefficients.
+4. Create one `WorkerNodeConfig(operation, calculation_type)` per worker, then
+   pass the configurations to `WorkerDispatcher.setup`. The operation is your
+   callable; `calculation_type` is the NumPy dtype used for that worker's numeric
+   inputs and passed to the operation.
+5. Call `WorkerDispatcher.dispatch` with the encoded records. The dispatcher
+   applies the coefficients, and each worker calls its operation with keyword
+   arguments `information` and `calculation_type`. An operation returning `None`
+   marks that worker as missing. The returned `WorkerResult` objects identify
+   responding workers and contain their computed values.
+6. Pass those results and the same code-family instance to
+   `PseudoInverseDecoder.decode`. It uses the responding workers' code rows and
+   returns one recovered output per original input item.
 
 For probabilistic stragglers, use
 `with_probabilistic_straggler(operation, straggler_probability, rng=...)`.
@@ -164,30 +129,36 @@ Supply `np.random.default_rng(seed)` for reproducible draws.
 
 ### Hydra pipelines
 
-`run_experiment` accepts an OmegaConf configuration with an `init` mapping and a
-`pipeline` sequence. Hydra instantiates the initial workspace. Named steps store
-their return values in that workspace, and strings beginning with `@` reference
-workspace values.
+This repo's structure was designed to be support easy implementations as hydra pipelines (as YAML files).
 
-```python
-from omegaconf import OmegaConf
+An example can be found in [straggler_recovery.yaml](examples/straggler_recovery.yaml). This experiment runs
+the three-worker recovery example described above and asserts that the decoded
+arrays match the originals.
 
-from codedcompute.hydra_pipeline.runner import run_experiment
+Each experiment has two main sections:
 
-config = OmegaConf.create({
-    "init": {},
-    "pipeline": [
-        {"values": {"call": "numpy.arange", "args": [4]}},
-        {"total": {"call": "numpy.sum", "args": ["@values"]}},
-    ],
-})
-workspace = run_experiment(config)
-print(workspace["total"])  # 6
-```
+- `init` defines the objects and initial data. Hydra's `_target_` entries construct
+  the code family, encoder, workers' operation, dispatcher, and decoder. These
+  objects are stored in a shared workspace.
+- `pipeline` lists the calls to execute in order. A `call` identifies an importable
+  function or a method on a workspace object; `args` and `kwargs` supply its
+  arguments. A named step stores its return value under that name in the workspace.
 
-Calls may use import paths or methods on workspace objects. Pipeline steps also
-support `for_each` loops with `values`, an optional `as` binding, and `steps`.
-Use a `run` step to execute a pipeline stored in the workspace.
+Quoted strings beginning with `@` refer to workspace values. For example,
+`"@information_set"` supplies the initialized arrays, and `"@config.straggler_ids"`
+reads the experiment's top-level straggler setting. Steps can use `for_each` with
+`values`, an optional `as` binding, and `steps` to repeat operations. A `run` step
+executes another pipeline stored in the workspace.
+
+In the example file, change `straggler_ids` to select the missing worker or
+`calculation_type` to change worker precision. The pipeline stores responding
+workers' results under `worker_results` and decoded arrays under `recovered`.
+The code family and worker operation remain in
+[examples/components.py](examples/components.py); the experiment setup and
+execution order live in YAML.
+
+`codedcompute.hydra_pipeline.runner.run_experiment` executes the loaded or
+Hydra-composed OmegaConf configuration and returns the populated workspace.
 
 ### Development checks
 
@@ -201,4 +172,4 @@ python -m ruff check src tests
 
 ## License
 
-A license has not yet been specified for this repository.
+Licensed under the [MIT License](LICENSE). Copyright (c) 2026 Royee Yosibash.
